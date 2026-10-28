@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+langgraph
+langchain-core
+langchain-groq
+python-dotenv
+sqlglot
+pytest
+httpx
