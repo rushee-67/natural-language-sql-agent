@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta
+        name="description"
+        content="Ask questions about your database using natural language."
+    >
+    <title>Natural Language SQL Agent</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/script.js" defer></script>
+</head>
+<body>
+    <main class="app-shell">
+        <header class="site-header">
+            <a href="/" class="brand" aria-label="SQL Agent home">
+                <span class="brand-icon">SQL</span>
+                <span class="brand-name">Data Assistant</span>
+            </a>
+            <span class="header-label">Natural Language to SQL</span>
+        </header>
+
+        <section class="hero">
+            <p class="eyebrow">YOUR DATABASE, IN PLAIN ENGLISH</p>
+            <h1>Ask your data<br><span>anything.</span></h1>
+            <p class="hero-description">
+                Ask a question. Your AI agent inspects the schema,
+                validates SQL, executes the query, and explains the results.
+            </p>
+        </section>
+
+        <section class="question-panel" aria-labelledby="question-heading">
+            <h2 id="question-heading">What would you like to know?</h2>
+
+            <form id="question-form">
+                <label for="question">Your question</label>
+                <textarea
+                    id="question"
+                    name="question"
+                    rows="3"
+                    maxlength="2000"
+                    placeholder="Which five products generated the highest revenue?"
+                    required
+                ></textarea>
+
+                <div class="form-footer">
+                    <span class="character-hint">Maximum 2,000 characters</span>
+                    <button id="submit-button" type="submit">
+                        <span class="button-spinner" aria-hidden="true"></span>
+                        <span id="button-label">Ask question <span aria-hidden="true">→</span></span>
+                    </button>
+                </div>
+            </form>
+
+            <div class="examples">
+                <p>Try an example</p>
+                <button
+                    type="button"
+                    class="example-button"
+                    data-question="Which five products generated the highest revenue? Use only shipped and delivered orders."
+                >
+                    Top products by revenue
+                </button>
+                <button
+                    type="button"
+                    class="example-button"
+                    data-question="How many orders are there in each status?"
+                >
+                    Orders by status
+                </button>
+                <button
+                    type="button"
+                    class="example-button"
+                    data-question="Which customers have placed the most orders?"
+                >
+                    Top customers by orders
+                </button>
+            </div>
+        </section>
+
+        <p
+            id="feedback"
+            class="feedback"
+            role="status"
+            aria-live="polite"
+            hidden
+        ></p>
+
+        <section
+            id="answer-section"
+            class="answer-section"
+            aria-labelledby="answer-heading"
+            hidden
+        >
+            <div class="answer-header">
+                <div>
+                    <p class="eyebrow">AGENT RESPONSE</p>
+                    <h2 id="answer-heading">Your answer</h2>
+                </div>
+                <span id="result-status" class="result-status"></span>
+            </div>
+
+            <div class="result-card answer-card">
+                <p id="answer-text"></p>
+            </div>
+
+            <section id="sql-card" class="result-card" hidden>
+                <div class="card-heading">
+                    <div>
+                        <p class="eyebrow">GENERATED QUERY</p>
+                        <h3>SQL</h3>
+                    </div>
+                    <button id="copy-sql" type="button" class="secondary-button">
+                        Copy SQL
+                    </button>
+                </div>
+                <pre><code id="sql-text"></code></pre>
+            </section>
+
+            <section id="results-card" class="result-card" hidden>
+                <div class="card-heading">
+                    <div>
+                        <p class="eyebrow">QUERY OUTPUT</p>
+                        <h3>Results</h3>
+                    </div>
+                    <span id="row-count" class="row-count"></span>
+                </div>
+
+                <div class="table-wrap">
+                    <table id="results-table">
+                        <thead id="results-head"></thead>
+                        <tbody id="results-body"></tbody>
+                    </table>
+                </div>
+
+                <p id="empty-results" class="empty-results" hidden>
+                    The query returned no rows.
+                </p>
+
+                <p id="truncation-note" class="truncation-note" hidden>
+                    Results were truncated to the first 100 rows.
+                </p>
+            </section>
+        </section>
+
+        <footer class="site-footer">
+            <p>Natural Language SQL Agent · Built with FastAPI and LangGraph</p>
+            <p>Review generated queries and results before relying on them.</p>
+        </footer>
+    </main>
+</body>
+</html>
