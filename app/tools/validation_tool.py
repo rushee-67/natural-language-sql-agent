@@ -1,3 +1,4 @@
+
 import json
 
 import sqlglot
@@ -6,14 +7,72 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 
+# Maximum SQL statement length.
 MAX_SQL_LENGTH = 10_000
 
-# Block potentially dangerous functions explicitly.
+# Query complexity limits.
+MAX_JOIN_COUNT = 5
+MAX_SUBQUERY_COUNT = 3
+MAX_CTE_COUNT = 5
+MAX_AST_NODES = 1000
+
+# Potentially dangerous functions.
 BLOCKED_FUNCTIONS = {
     "load_extension",
     "writefile",
     "readfile",
 }
+
+
+def _validate_query_complexity(statement) -> str | None:
+    """
+    Check structural complexity of a parsed SQL statement.
+
+    Returns an error message when a limit is exceeded.
+    Otherwise, returns None.
+    """
+
+    join_count = sum(
+        1 for _ in statement.find_all(exp.Join)
+    )
+
+    if join_count > MAX_JOIN_COUNT:
+        return (
+            f"Query contains too many JOIN operations. "
+            f"Maximum allowed: {MAX_JOIN_COUNT}."
+        )
+
+    subquery_count = sum(
+        1 for _ in statement.find_all(exp.Subquery)
+    )
+
+    if subquery_count > MAX_SUBQUERY_COUNT:
+        return (
+            f"Query contains too many nested subqueries. "
+            f"Maximum allowed: {MAX_SUBQUERY_COUNT}."
+        )
+
+    cte_count = sum(
+        1 for _ in statement.find_all(exp.CTE)
+    )
+
+    if cte_count > MAX_CTE_COUNT:
+        return (
+            f"Query contains too many CTEs. "
+            f"Maximum allowed: {MAX_CTE_COUNT}."
+        )
+
+    ast_node_count = sum(
+        1 for _ in statement.walk()
+    )
+
+    if ast_node_count > MAX_AST_NODES:
+        return (
+            f"Query structure is too complex. "
+            f"Maximum allowed AST nodes: {MAX_AST_NODES}."
+        )
+
+    return None
 
 
 def validate_sql_query(query: str) -> dict:
@@ -61,8 +120,7 @@ def validate_sql_query(query: str) -> dict:
             "message": "Only SELECT queries are allowed.",
         }
 
-    # Reject selected functions that are unnecessary for this project
-    # and may expose filesystem or extension capabilities.
+    # Reject potentially dangerous functions.
     for function in statement.find_all(exp.Anonymous):
         if function.name.lower() in BLOCKED_FUNCTIONS:
             return {
@@ -72,9 +130,18 @@ def validate_sql_query(query: str) -> dict:
                 ),
             }
 
+    # Reject queries that exceed structural complexity limits.
+    complexity_error = _validate_query_complexity(statement)
+
+    if complexity_error:
+        return {
+            "valid": False,
+            "message": complexity_error,
+        }
+
     return {
         "valid": True,
-        "message": "SQL passed the initial validation checks.",
+        "message": "SQL passed all validation checks.",
         "normalized_sql": statement.sql(dialect="sqlite"),
     }
 
@@ -85,7 +152,8 @@ def validate_sql(query: str) -> str:
     Validate a candidate SQL query.
 
     Allows one SELECT statement and SELECT queries using CTEs.
-    Rejects write statements, multiple statements and blocked functions.
+    Rejects write statements, multiple statements, blocked
+    functions and overly complex query structures.
     """
     result = validate_sql_query(query)
     return json.dumps(result)
