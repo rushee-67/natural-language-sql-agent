@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -7,8 +8,24 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 # Locate the project root.
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-# Store our SQLite database in the project root.
-DATABASE_PATH = BASE_DIR / "sql_agent.db"
+# Read an optional database path from the environment.
+configured_path = os.getenv("SQLITE_DB_PATH")
+
+DATABASE_PATH = (
+    Path(configured_path).expanduser()
+    if configured_path
+    else BASE_DIR / "sql_agent.db"
+)
+
+# Convert to an absolute path.
+DATABASE_PATH = DATABASE_PATH.resolve()
+
+# Ensure the database directory exists.
+DATABASE_PATH.parent.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
 DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 
 

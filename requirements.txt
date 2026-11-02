@@ -6,5 +6,3 @@ langchain-core
 langchain-groq
 python-dotenv
 sqlglot
-pytest
-httpx
