@@ -1,7 +1,17 @@
+from langchain_core import messages
 from sqlalchemy import update
 import json
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.graph import END
+
+from app.agent.graph import (
+    MAX_TOOL_CALLS_PER_REQUEST,
+    check_tool_budget,
+    route_after_agent,
+    route_after_tool_budget,
+)
 
 import app.agent.graph as graph_module
 from app.agent.recovery import inspect_tool_results
@@ -271,7 +281,9 @@ def test_agent_stops_after_two_recovery_attempts(monkeypatch):
                 )
             ]
         },
-        config={"recursion_limit": 20},
+        config={
+    "recursion_limit": graph_module.MAX_GRAPH_STEPS_PER_REQUEST
+},
     )
 
     validation_messages = [
@@ -376,13 +388,13 @@ def test_agent_recovers_from_execution_error(monkeypatch):
             ]
 
         def invoke(self, messages):
-            # Before the correction, verify the LLM can see
-            # the original database error in message history.
+            # Verify the LLM receives a sanitized, actionable
+            # database error before attempting correction.
             if len(self.responses) == 3:
                 assert any(
                     isinstance(message, ToolMessage)
                     and message.name == "execute_sql"
-                    and "no such column: customer_name"
+                    and "column that does not exist"
                     in message.content
                     for message in messages
                 )
@@ -418,7 +430,9 @@ def test_agent_recovers_from_execution_error(monkeypatch):
                 )
             ]
         },
-        config={"recursion_limit": 20},
+        config={
+    "recursion_limit": graph_module.MAX_GRAPH_STEPS_PER_REQUEST
+},
     )
 
     tool_messages = [
@@ -475,3 +489,281 @@ def test_successful_execution_clears_stale_error():
     assert update["last_error"] == ""
     assert update["recovery_exhausted"] is False
     assert "retry_count" not in update
+
+
+def make_tool_calls(count):
+    """Create mock tool calls for testing."""
+
+    return [
+        {
+            "name": "get_schema",
+            "args": {},
+            "id": f"tool-call-{i}",
+            "type": "tool_call",
+        }
+        for i in range(count)
+    ]
+
+
+def test_tool_budget_counts_requested_calls():
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=make_tool_calls(3),
+            )
+        ]
+    }
+
+    update = check_tool_budget(state)
+
+    assert update["tool_call_count"] == 3
+    assert update["tool_budget_exhausted"] is False
+
+
+def test_tool_budget_accumulates_across_iterations():
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=make_tool_calls(2),
+            )
+        ],
+        "tool_call_count": 5,
+    }
+
+    update = check_tool_budget(state)
+
+    assert update["tool_call_count"] == 7
+    assert update["tool_budget_exhausted"] is False
+
+
+def test_tool_budget_allows_exact_limit():
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=make_tool_calls(2),
+            )
+        ],
+        "tool_call_count": MAX_TOOL_CALLS_PER_REQUEST - 2,
+    }
+
+    update = check_tool_budget(state)
+
+    assert update["tool_call_count"] == MAX_TOOL_CALLS_PER_REQUEST
+    assert update["tool_budget_exhausted"] is False
+
+
+def test_tool_budget_rejects_calls_exceeding_limit():
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=make_tool_calls(2),
+            )
+        ],
+        "tool_call_count": MAX_TOOL_CALLS_PER_REQUEST - 1,
+    }
+
+    update = check_tool_budget(state)
+
+    assert update["tool_budget_exhausted"] is True
+
+    # No additional calls are reserved.
+    assert "tool_call_count" not in update
+
+    updated_state = {**state, **update}
+
+    assert route_after_tool_budget(updated_state) == "limit_exceeded"
+
+
+def test_tool_budget_allows_valid_execution():
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=make_tool_calls(2),
+            )
+        ],
+        "tool_call_count": 2,
+    }
+
+    update = check_tool_budget(state)
+
+    updated_state = {**state, **update}
+
+    assert route_after_tool_budget(updated_state) == "tools"
+
+
+def test_agent_routes_tool_requests_to_budget_check():
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=make_tool_calls(1),
+            )
+        ]
+    }
+
+    assert route_after_agent(state) == "check_tool_budget"
+
+
+def test_agent_routes_final_answers_to_end():
+    state = {
+        "messages": [
+            AIMessage(content="The query returned five products.")
+        ]
+    }
+
+    assert route_after_agent(state) == END
+
+
+def test_agent_stops_after_tool_call_budget_is_exhausted(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    execution_count = {"value": 0}
+
+    @tool
+    def get_schema():
+        """Return a minimal database schema."""
+        execution_count["value"] += 1
+
+        return json.dumps({
+            "tables": {}
+        })
+
+    class FakeModel:
+        def __init__(self):
+            self.invocation_count = 0
+
+        def invoke(self, messages):
+            self.invocation_count += 1
+
+            # Always request another schema inspection.
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_schema",
+                        "args": {},
+                        "id": f"schema-{self.invocation_count}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    fake_model = FakeModel()
+
+    class FakeChatGroq:
+        def __init__(self, **kwargs):
+            pass
+
+        def bind_tools(self, tools):
+            return fake_model
+
+    # Replace the actual tools and LLM with test doubles.
+    monkeypatch.setattr(
+        graph_module,
+        "TOOLS",
+        [get_schema],
+    )
+
+    monkeypatch.setattr(
+        graph_module,
+        "ChatGroq",
+        FakeChatGroq,
+    )
+
+    agent = graph_module.build_graph()
+
+    result = agent.invoke(
+        {
+            "messages": [
+                HumanMessage(
+                    content="Inspect the database schema."
+                )
+            ]
+        },
+        config={
+            "recursion_limit": (
+                graph_module.MAX_GRAPH_STEPS_PER_REQUEST
+            )
+        },
+    )
+
+    # Exactly 12 tool calls should have executed.
+    assert execution_count["value"] == (
+        graph_module.MAX_TOOL_CALLS_PER_REQUEST
+    )
+
+    # The model requested one additional call.
+    assert fake_model.invocation_count == (
+        graph_module.MAX_TOOL_CALLS_PER_REQUEST + 1
+    )
+
+    # The state records the exhausted budget.
+    assert result["tool_call_count"] == (
+        graph_module.MAX_TOOL_CALLS_PER_REQUEST
+    )
+
+    assert result["tool_budget_exhausted"] is True
+
+    # Verify that the agent returned a controlled response.
+    final_message = result["messages"][-1]
+
+    assert isinstance(final_message, AIMessage)
+    assert "maximum tool-call limit" in final_message.content
+
+
+def test_chatgroq_receives_timeout_and_retry_configuration(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_REQUEST_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("GROQ_MAX_RETRIES", "2")
+
+    captured = {}
+
+    class FakeChatGroq:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def bind_tools(self, tools):
+            return self
+
+    monkeypatch.setattr(
+        graph_module,
+        "ChatGroq",
+        FakeChatGroq,
+    )
+
+    graph_module.build_graph()
+
+    assert captured["request_timeout"] == 30.0
+    assert captured["max_retries"] == 2
+    assert captured["temperature"] == 0
+
+
+def test_chatgroq_rejects_invalid_timeout(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_REQUEST_TIMEOUT_SECONDS", "-1")
+
+    with pytest.raises(
+        RuntimeError,
+        match="timeout must be positive",
+    ):
+        graph_module.build_graph()
+
+
+def test_chatgroq_rejects_negative_retries(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_MAX_RETRIES", "-1")
+
+    with pytest.raises(
+        RuntimeError,
+        match="timeout must be positive",
+    ):
+        graph_module.build_graph()

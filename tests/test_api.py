@@ -69,7 +69,10 @@ def test_ask_returns_answer_and_query_results(monkeypatch):
     }
 
     class FakeAgent:
-        def invoke(self, state):
+        def invoke(self, state, config=None):
+            assert config["recursion_limit"] == (
+                routes.MAX_GRAPH_STEPS_PER_REQUEST
+            )
             return {
                 "messages": [
                     AIMessage(
@@ -126,7 +129,7 @@ def test_ask_rejects_blank_question():
 
 def test_ask_returns_502_when_agent_raises(monkeypatch):
     class BrokenAgent:
-        def invoke(self, state):
+        def invoke(self, state, config=None):
             raise RuntimeError("Internal provider error")
 
     monkeypatch.setattr(routes, "get_agent", lambda: BrokenAgent())
@@ -146,3 +149,82 @@ def test_frontend_homepage_is_served():
 
     assert response.status_code == 200
     assert "Data Assistant" in response.text
+
+
+def test_ask_without_sql_execution_returns_success_false(monkeypatch):
+
+    class FakeAgent:
+        def invoke(self, state, config=None):
+            return {
+                "messages": [
+                    AIMessage(
+                        content="The database contains four tables."
+                    )
+                ]
+            }
+
+    monkeypatch.setattr(
+        routes,
+        "get_agent",
+        lambda: FakeAgent(),
+    )
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "What tables are available?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+
+
+def test_ask_tool_budget_exhaustion_returns_success_false(monkeypatch):
+
+    execution_payload = {
+        "success": True,
+        "columns": ["product_name"],
+        "rows": [{"product_name": "Keyboard"}],
+        "row_count": 1,
+        "truncated": False,
+    }
+
+    class FakeAgent:
+        def invoke(self, state, config=None):
+            return {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "execute_sql",
+                                "args": {"query": "SELECT 1"},
+                                "id": "execute-1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    ToolMessage(
+                        content=json.dumps(execution_payload),
+                        tool_call_id="execute-1",
+                        name="execute_sql",
+                    ),
+                    AIMessage(
+                        content="The tool-call budget was exceeded."
+                    ),
+                ],
+                "tool_budget_exhausted": True,
+            }
+
+    monkeypatch.setattr(
+        routes,
+        "get_agent",
+        lambda: FakeAgent(),
+    )
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "Show the top products."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is False

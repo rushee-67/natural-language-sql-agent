@@ -1,3 +1,4 @@
+
 from typing import Annotated
 
 from typing_extensions import NotRequired, TypedDict
@@ -21,3 +22,9 @@ class SQLAgentState(TypedDict):
 
     # Whether the recovery limit has been reached.
     recovery_exhausted: NotRequired[bool]
+
+    # Number of tool calls authorized for execution.
+    tool_call_count: NotRequired[int]
+
+    # Whether the tool-call budget has been exhausted.
+    tool_budget_exhausted: NotRequired[bool]

@@ -8,8 +8,9 @@ from fastapi import APIRouter, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent.graph import build_graph
+from app.agent.graph import build_graph, MAX_GRAPH_STEPS_PER_REQUEST
 from app.tools.schema_tool import get_schema
+from app.agent.provider_errors import LLMProviderError
 
 
 
@@ -152,14 +153,39 @@ def ask_question(request: AskRequest) -> AskResponse:
                 "messages": [
                     HumanMessage(content=request.question)
                 ]
-            }
+            },
+            config={
+                "recursion_limit": MAX_GRAPH_STEPS_PER_REQUEST
+            },
         )
+    except LLMProviderError as exc:
+        # Log detailed diagnostic information internally.
+        logger.exception(
+            "LLM provider failure: category=%s, "
+            "provider_exception=%s, upstream_status=%s",
+            exc.category,
+            exc.provider_exception_type,
+            exc.provider_status_code,
+        )
+
+        # Return only the safe, categorized error to the client.
+        raise HTTPException(
+            status_code=exc.http_status_code,
+            detail=exc.safe_message,
+        ) from exc
+
     except Exception as exc:
-        logger.exception("The SQL agent failed while handling a question.")
+        # Handle unexpected non-provider application errors.
+        logger.exception(
+            "The SQL agent failed while handling a question."
+        )
 
         raise HTTPException(
             status_code=502,
-            detail="The SQL agent could not process the question. Please try again.",
+            detail=(
+                "The SQL agent could not process the question. "
+                "Please try again."
+            ),
         ) from exc
 
     messages = result.get("messages", [])
@@ -194,15 +220,28 @@ def ask_question(request: AskRequest) -> AskResponse:
     except (TypeError, ValueError):
         row_count = len(rows)
 
-    if execution is None:
-        success = not result.get("recovery_exhausted", False)
-    elif isinstance(execution.get("success"), bool):
-        success = execution["success"]
-    else:
-        success = not bool(execution.get("error"))
+    # Check whether the agent exhausted its recovery attempts.
+    recovery_exhausted = bool(
+        result.get("recovery_exhausted", False)
+    )
 
-    if result.get("recovery_exhausted", False):
-        success = False
+    # Check whether the agent exceeded its tool-call budget.
+    tool_budget_exhausted = bool(
+        result.get("tool_budget_exhausted", False)
+    )
+
+    # SQL execution must explicitly report success.
+    execution_succeeded = (
+        execution is not None
+        and execution.get("success") is True
+    )
+
+    # Fail-closed success policy.
+    success = (
+        execution_succeeded
+        and not recovery_exhausted
+        and not tool_budget_exhausted
+    )
 
     return AskResponse(
         success=success,
