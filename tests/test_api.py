@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from app.api.routes import AskRequest
 from app.main import app
 import app.api.routes as routes
+import app.api.rate_limit as rate_limit
 
 
 client = TestClient(app)
@@ -228,3 +229,74 @@ def test_ask_tool_budget_exhaustion_returns_success_false(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["success"] is False
+
+
+def test_ask_rate_limit_blocks_excessive_requests(monkeypatch):
+    # Configure a small limit for this test.
+    monkeypatch.setattr(
+        rate_limit,
+        "RATE_LIMIT_MAX_REQUESTS",
+        1,
+    )
+
+    monkeypatch.setattr(
+        rate_limit,
+        "RATE_LIMIT_WINDOW_SECONDS",
+        60,
+    )
+
+    # Clear previous test request history.
+    rate_limit._request_timestamps.clear()
+
+    execution_payload = {
+        "success": True,
+        "columns": ["value"],
+        "rows": [{"value": 1}],
+        "row_count": 1,
+        "truncated": False,
+    }
+
+    class FakeAgent:
+        def invoke(self, state, config=None):
+            return {
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(execution_payload),
+                        tool_call_id="execute-1",
+                        name="execute_sql",
+                    ),
+                    AIMessage(content="The query returned one row."),
+                ]
+            }
+
+    monkeypatch.setattr(
+        routes,
+        "get_agent",
+        lambda: FakeAgent(),
+    )
+
+    try:
+        # First request should succeed.
+        first_response = client.post(
+            "/api/ask",
+            json={"question": "Show one result."},
+        )
+
+        assert first_response.status_code == 200
+
+        # Second request should be rejected.
+        second_response = client.post(
+            "/api/ask",
+            json={"question": "Show another result."},
+        )
+
+        assert second_response.status_code == 429
+
+        assert "Retry-After" in second_response.headers
+
+        assert "Too many requests" in (
+            second_response.json()["detail"]
+        )
+
+    finally:
+        rate_limit._request_timestamps.clear()

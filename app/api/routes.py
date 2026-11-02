@@ -4,13 +4,14 @@ import logging
 from functools import lru_cache
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent.graph import build_graph, MAX_GRAPH_STEPS_PER_REQUEST
 from app.tools.schema_tool import get_schema
 from app.agent.provider_errors import LLMProviderError
+from app.api.rate_limit import enforce_ask_rate_limit
 
 
 
@@ -144,7 +145,11 @@ def read_schema():
     return result
 
 
-@router.post("/ask", response_model=AskResponse)
+@router.post(
+    "/ask",
+    response_model=AskResponse,
+    dependencies=[Depends(enforce_ask_rate_limit)],
+)
 def ask_question(request: AskRequest) -> AskResponse:
     """Answer a natural-language question using the SQL agent."""
     try:
