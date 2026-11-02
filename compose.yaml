@@ -1,0 +1,26 @@
+
+services:
+  app:
+    build:
+      context: .
+
+    image: natural-language-sql-agent:local
+
+    env_file:
+      - .env
+
+    environment:
+        PORT: "8000"
+        SQLITE_DB_PATH: /data/sql_agent.db
+
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    volumes:
+      - sql_agent_data:/data
+
+    restart: unless-stopped
+
+volumes:
+  sql_agent_data:
+    name: sql-agent-data
